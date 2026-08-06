@@ -35,7 +35,7 @@ def test_task_rejects_unknown_fields() -> None:
     with pytest.raises(ValidationError):
         Task(
             goal="Geçersiz alanı kontrol et.",
-            unknown_field="test",
+            unknown_field="test",  # type: ignore[call-arg]
         )
 
 
