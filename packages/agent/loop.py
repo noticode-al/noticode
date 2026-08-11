@@ -5,6 +5,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from packages.agent.agent import AgentStatus
 from packages.agent.decision import AgentAction, AgentDecision
 from packages.agent.parser import AgentDecisionParseError, AgentDecisionParser
+from packages.agent.tool_adapter import (
+    ToolRequestAdapter,
+    ToolRequestAdapterError,
+)
 from packages.models.gateway import (
     ModelGateway,
     ModelMessage,
@@ -33,7 +37,7 @@ class AgentLoopRun(BaseModel):
 
 
 class AIAgentLoop:
-    """Drive model decisions, tool execution and observations."""
+    """Drive model decisions, typed tool execution and observations."""
 
     SYSTEM_PROMPT = """
 You are the reasoning engine of Noticode.
@@ -64,6 +68,7 @@ Never claim that an action succeeded without observing its tool result.
         model_gateway: ModelGateway,
         tool_registry: ToolRegistry,
         parser: AgentDecisionParser | None = None,
+        tool_adapter: ToolRequestAdapter | None = None,
         max_iterations: int = 20,
     ) -> None:
         if max_iterations < 1:
@@ -72,6 +77,7 @@ Never claim that an action succeeded without observing its tool result.
         self._model_gateway = model_gateway
         self._tool_registry = tool_registry
         self._parser = parser or AgentDecisionParser()
+        self._tool_adapter = tool_adapter or ToolRequestAdapter()
         self._max_iterations = max_iterations
 
     async def run(self, goal: str) -> AgentLoopRun:
@@ -143,8 +149,6 @@ Never claim that an action succeeded without observing its tool result.
                     )
                 )
 
-                continue
-
         return self._fail_run(
             run,
             f"Maximum iteration limit reached: {self._max_iterations}.",
@@ -154,7 +158,7 @@ Never claim that an action succeeded without observing its tool result.
         self,
         decision: AgentDecision,
     ) -> ToolResult:
-        """Execute the tool requested by a model decision."""
+        """Adapt and execute the tool requested by a model decision."""
 
         if decision.tool_name is None:
             return ToolResult(
@@ -170,7 +174,16 @@ Never claim that an action succeeded without observing its tool result.
                 error=f"Tool is not registered: {decision.tool_name}",
             )
 
-        arguments: dict[str, Any] = decision.arguments
+        try:
+            arguments = self._tool_adapter.adapt(
+                tool_name=decision.tool_name,
+                arguments=decision.arguments,
+            )
+        except ToolRequestAdapterError as exc:
+            return ToolResult(
+                success=False,
+                error=str(exc),
+            )
 
         try:
             if not tool.validate(**arguments):
@@ -179,7 +192,7 @@ Never claim that an action succeeded without observing its tool result.
                     error=f"Tool arguments are invalid: {decision.tool_name}",
                 )
 
-            raw_result = tool.execute(**arguments)
+            raw_result: Any = tool.execute(**arguments)
 
         except Exception as exc:
             return ToolResult(
